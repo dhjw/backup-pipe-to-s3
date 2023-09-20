@@ -1,0 +1,42 @@
+#!/bin/bash
+# archive and encrypt backup with pipe to s3 config
+# see https://aws.amazon.com/s3/pricing/
+keyfile="/root/.bk"
+email="admin@example.com"
+bucket="example-backups"
+storageclass="STANDARD" # STANDARD | REDUCED_REDUNDANCY | STANDARD_IA | ONEZONE_IA | INTELLIGENT_TIERING | GLACIER | DEEP_ARCHIVE | GLACIER_IR
+numkeep=10
+files=(
+        "/etc"
+        "/var/spool/cron"
+        "/var/www"
+        "/usr/local/bin"
+        "/root/.ssh"
+        "/root/.bk"
+        "/root/.aws"
+        "/home/d/.ssh"
+        "/home/d/.local/share/keyrings"
+        "/home/d/.thunderbird"
+        "/home/d/.gnupg"
+        "/home/d/.aws"
+        "/home/d/.bashrc"
+        "/home/d/.screenrc"
+        "/home/d/.xkb"
+        "/home/d/.config/vlc"
+        "/home/d/.config/autostart"
+        "/home/d/.config/Code/User"
+        "/home/d/.fonts"
+        "/home/d/bin"
+        "/home/d/code"
+        "/home/d/Documents"
+        "/home/d/projects"
+        "/home/d/.local/share/kdenlive"
+)
+excludes=(
+        "/home/d/code/wxPython-demo*"
+        "/home/d/.config/Code/User/workspaceStorage"
+        "/home/d/.config/Code/User/History"
+        "/home/d/.local/share/kdenlive/.backup"
+        "/var/www/default/public_html/dl/*"
+)
+

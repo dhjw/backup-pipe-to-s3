@@ -1,0 +1,66 @@
+#!/bin/bash
+# archive and encrypt backup with pipe to s3
+# backup.cfg should be in the same folder as this script
+# recommend a daily cron task for root user, e.g. 0 0 * * * backup > /var/log/backup.log
+
+echo "start $(date)"
+
+# read config
+if [ ! -f "$(dirname "$0")/backup.cfg" ] || [ ! -r "$(dirname "$0")/backup.cfg" ]; then echo "error reading $(dirname "$0")/backup.cfg"; exit; fi
+source $(dirname "$0")/backup.cfg
+
+# function: exit with error, email admin
+function ex () {
+	echo -e "error: $1" #| sed -z '$ s/\n$//'
+	echo "sending email to $email"
+	echo -e "$1" | mail -s "$(hostname) backup error" $email
+	exit
+}
+
+# create temp folder (always do first as we trap exit to remove it)
+tmpdir=$(mktemp -d -t backup-XXXXXXXX)
+if [ ! -d $tmpdir ]; then ex "failed to make tmpdir"; fi
+echo "tmpdir=$tmpdir"
+cd $tmpdir
+trap 'echo "removing $tmpdir"; rm -rf -- "$tmpdir"; echo "end $(date)"' EXIT
+
+# check requirements
+for x in "ccencrypt" "pigz" "aws" "pv"; do if [ -z "$(which $x)" ]; then ex "install $x"; fi; done
+if [ ! -f "$keyfile" ]; then ex "key file $keyfile does not exist"; fi
+if [ ! -r "$keyfile" ]; then ex "can't read key file"; fi
+
+# create temp excludes file
+touch $tmpdir/excludes
+if [ ! -f $tmpdir/excludes ]; then ex "failed to make $tmpdir/excludes"; fi
+for ex in "${excludes[@]}"; do echo "$ex" >> $tmpdir/excludes; done
+
+# dump all databases
+echo "dumping databases"
+nice -n 19 mysqldump --defaults-extra-file=/etc/mysql/debian.cnf --all-databases -r ./databases.sql
+if [ ! -f databases.sql ]; then ex "error dumping databases: file not found"; fi
+if [ $(ls -al databases.sql | awk '{print $5}') -lt 100 ]; then ex "error dumping databases: file too small\n$(ls -alh databases.sql)"; fi
+ls -alh databases.sql
+files+=( "./databases.sql" )
+
+# archive, encrypt and pipe to s3
+datestr=$(date +%Y%m%d_%H%M%S_%Z)
+s3file="s3://$bucket/backup_$(hostname)_$datestr.tgz.cpt"
+echo "files=${files[@]@Q}"
+echo "excludes=${excludes[@]@Q}"
+echo "archiving and encrypting while piping to $s3file ($storageclass)"
+echo "be patient" >&2
+nice -n 19 tar --exclude-from=$tmpdir/excludes -cf - "${files[@]}" 2>/dev/null | nice -n 19 pigz -9 | nice -n 19 ccencrypt -k $keyfile | pv | aws s3 cp - $s3file --storage-class=$storageclass
+
+# remove excess remote files (it's safe to have other host's backups and other things in the bucket)
+echo "removing excess remote files ($numkeep max)"
+aws s3 ls s3://$bucket/backup_$(hostname)_ | grep "\.cpt$" | sort | head -n -$numkeep | awk '{$1=$2=$3=""; print $0}' | sed 's/^[ \t]*//' | while read -r line; do aws s3 rm "s3://$bucket/$line"; done
+
+# verify upload exists and isn't too small indicating an archive error
+echo "verifying upload"
+a=$(aws s3 ls "$s3file" 2>/dev/null)
+if [ -z "$a" ]; then ex "upload not found"; fi
+if [ $(echo "$a" | awk '{print $3}') -lt 1000000 ]; then ex "upload too small\n$a"; fi
+
+# done
+echo $a
+echo "backup complete"
