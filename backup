@@ -1,7 +1,7 @@
 #!/bin/bash
 # archive and encrypt backup with pipe to s3
 # backup.cfg should be in the same folder as this script
-# recommend a daily cron task for root user, e.g. 0 0 * * * backup > /var/log/backup.log
+# recommend a daily cron task for root user, e.g. 0 0 * * * /usr/local/bin/backup > /var/log/backup.log
 
 echo "start $(date)"
 
@@ -42,24 +42,33 @@ if [ $(ls -al databases.sql | awk '{print $5}') -lt 100 ]; then ex "error dumpin
 ls -alh databases.sql
 files+=( "./databases.sql" )
 
-# archive, encrypt and pipe to s3
+# backup
 datestr=$(date +%Y%m%d_%H%M%S_%Z)
-s3file="s3://$bucket/backup_$(hostname)_$datestr.tgz.cpt"
 echo "files=${files[@]@Q}"
 echo "excludes=${excludes[@]@Q}"
-echo "archiving and encrypting while piping to $s3file ($storageclass)"
-echo "be patient" >&2
-nice -n 19 tar --exclude-from=$tmpdir/excludes -cf - "${files[@]}" 2>/dev/null | nice -n 19 pigz -9 | nice -n 19 ccencrypt -k $keyfile | pv | aws s3 cp - $s3file --storage-class=$storageclass
 
-# remove excess remote files (it's safe to have other host's backups and other things in the bucket)
-echo "removing excess remote files ($numkeep max)"
-aws s3 ls s3://$bucket/backup_$(hostname)_ | grep "\.cpt$" | sort | head -n -$numkeep | awk '{$1=$2=$3=""; print $0}' | sed 's/^[ \t]*//' | while read -r line; do aws s3 rm "s3://$bucket/$line"; done
+if [ "$1" == "local" ]; then
+	echo "local backup"
+	file="/root/backup_$(hostname)_$datestr.tgz"
+	echo "archiving to $file"
+	nice -n 19 tar --exclude-from=$tmpdir/excludes -cf - "${files[@]}" 2>/dev/null | nice -n 19 pigz -9 | pv > $file
+else
+	echo "s3 backup"
+	# archive, encrypt and pipe to s3
+	s3file="s3://$bucket/backup_$(hostname)_$datestr.tgz.cpt"
+	echo "archiving and encrypting while piping to $s3file ($storageclass)"
+	nice -n 19 tar --exclude-from=$tmpdir/excludes -cf - "${files[@]}" 2>/dev/null | nice -n 19 pigz -9 | nice -n 19 ccencrypt -k $keyfile | pv | aws s3 cp - $s3file --storage-class=$storageclass
 
-# verify upload exists and isn't too small indicating an archive error
-echo "verifying upload"
-a=$(aws s3 ls "$s3file" 2>/dev/null)
-if [ -z "$a" ]; then ex "upload not found"; fi
-if [ $(echo "$a" | awk '{print $3}') -lt 1000000 ]; then ex "upload too small\n$a"; fi
+	# remove excess remote files (it's safe to have other host's backups and other things in the bucket)
+	echo "removing excess remote files ($numkeep max)"
+	aws s3 ls s3://$bucket/backup_$(hostname)_ | grep "\.cpt$" | sort | head -n -$numkeep | awk '{$1=$2=$3=""; print $0}' | sed 's/^[ \t]*//' | while read -r line; do aws s3 rm "s3://$bucket/$line"; done
+
+	# verify upload exists and isn't too small indicating an archive error
+	echo "verifying upload"
+	a=$(aws s3 ls "$s3file" 2>/dev/null)
+	if [ -z "$a" ]; then ex "upload not found"; fi
+	if [ $(echo "$a" | awk '{print $3}') -lt 1000000 ]; then ex "upload too small\n$a"; fi
+fi
 
 # done
 echo $a
